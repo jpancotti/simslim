@@ -49,6 +49,12 @@ func newApp() *cli.Command {
 			&cli.BoolFlag{Name: "confirm", Usage: "confirm permanent deletion"},
 			preserveBootStateFlag("reboot a simulator that was booted before cleanup"),
 		}, Action: cmdDiskClean},
+		{Name: "derived-data", Flags: []cli.Flag{jsonFlag()}, Action: cmdDerivedData},
+		{Name: "derived-data-clean", Flags: []cli.Flag{
+			jsonFlag(),
+			&cli.StringSliceFlag{Name: "entry", Usage: "exact direct-child directory name to delete (repeatable)"},
+			&cli.BoolFlag{Name: "confirm", Usage: "confirm permanent deletion"},
+		}, Action: cmdDerivedDataClean},
 		{Name: "clone", Flags: []cli.Flag{jsonFlag()}, Action: cmdClone},
 		{Name: "rename", Flags: []cli.Flag{jsonFlag()}, Action: cmdRename},
 		{Name: "boot", Flags: []cli.Flag{jsonFlag()}, Action: cmdBoot},

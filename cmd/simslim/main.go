@@ -543,6 +543,63 @@ func cmdDiskClean(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
+func cmdDerivedData(ctx context.Context, cmd *cli.Command) error {
+	jsonOutput := cmd.Bool("json")
+	if cmd.Args().Len() != 0 {
+		return fmt.Errorf("derived-data takes no arguments")
+	}
+	scan, err := simslim.ScanDerivedData(ctx)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return writeJSON(scan)
+	}
+	fmt.Printf("%s: %s across %d generated directories\n", scan.RootPath, humanBytes(scan.TotalBytes), len(scan.Entries))
+	for _, entry := range scan.Entries {
+		fmt.Printf("  %-42s %8s  %s\n", truncate(entry.DirectoryName, 42), humanBytes(entry.Bytes), entry.Kind)
+		if metadata := simslim.FormatDerivedDataMetadata(entry); metadata != "" {
+			fmt.Printf("      %s\n", metadata)
+		}
+		if entry.SourcePath != "" {
+			sourceStatus := ""
+			if !entry.SourceExists {
+				sourceStatus = " (source missing)"
+			}
+			fmt.Printf("      %s%s\n", entry.SourcePath, sourceStatus)
+		}
+	}
+	return nil
+}
+
+func cmdDerivedDataClean(ctx context.Context, cmd *cli.Command) error {
+	jsonOutput := cmd.Bool("json")
+	if cmd.Args().Len() != 0 {
+		return fmt.Errorf("derived-data-clean takes no positional arguments; pass each directory with --entry")
+	}
+	if !cmd.Bool("confirm") {
+		return fmt.Errorf("derived-data-clean permanently deletes generated Xcode data; pass --confirm after reviewing `simslim derived-data`")
+	}
+	result, err := simslim.CleanDerivedData(ctx, cmd.StringSlice("entry"))
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return writeJSON(result)
+	}
+	directoryNoun := "directories"
+	if len(result.DeletedEntryIDs) == 1 {
+		directoryNoun = "directory"
+	}
+	fmt.Printf(
+		"Deleted %d Derived Data %s and reclaimed %s. Xcode will regenerate data when projects build or index again.\n",
+		len(result.DeletedEntryIDs),
+		directoryNoun,
+		humanBytes(result.ReclaimedBytes),
+	)
+	return nil
+}
+
 func cmdClone(ctx context.Context, cmd *cli.Command) error {
 	jsonOutput := cmd.Bool("json")
 	args := cmd.Args().Slice()
@@ -918,6 +975,10 @@ COMMANDS
       --confirm        Required acknowledgement of permanent deletion
       --preserve-boot-state
                        Reboot a simulator that was booted before cleanup
+  derived-data         Scan Xcode Derived Data by generated directory
+  derived-data-clean   Permanently delete selected Derived Data directories
+      --entry name     Exact directory name from derived-data (repeatable)
+      --confirm        Required acknowledgement of permanent deletion
   clone <udid> <name>  Clone a simulator, preserving its current boot state
   rename <udid> <name> Rename a simulator
   boot <udid>          Boot a simulator and wait for its services
@@ -942,6 +1003,11 @@ contents; Erase does not bring that history back, although new generated data
 appears as iOS and apps run. Downloaded language data is opt-in and may return
 when a feature needs it. Required Siri assets are informational only because iOS
 restores them after deletion. simslim never modifies the shared iOS runtime.
+
+Derived Data cleanup is the one host-Mac cleanup feature. It only deletes exact,
+selected direct children of Xcode's DerivedData directory; project source,
+archives, device support files, simulators, and the DerivedData root are outside
+that boundary.
 
   https://github.com/mobai-app/simslim · by MobAI (https://mobai.run)
 `)

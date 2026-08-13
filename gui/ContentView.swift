@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
   @EnvironmentObject private var model: AppModel
   @State private var searchText = ""
+  @State private var derivedDataSearchText = ""
   @State private var searchIsExpanded = false
   @State private var managementSheet: SimulatorManagementSheet?
   @State private var slimmingMode: SlimmingMode = .memory
@@ -21,6 +22,22 @@ struct ContentView: View {
     Set(filteredDevices.map(\.udid))
   }
 
+  private var filteredDerivedDataEntries: [DerivedDataEntry] {
+    let query = derivedDataSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !query.isEmpty else { return model.derivedDataEntries }
+    return model.derivedDataEntries.filter {
+      $0.metadataSearchText.localizedCaseInsensitiveContains(query)
+    }
+  }
+
+  private var filteredDerivedDataIDs: Set<String> {
+    Set(filteredDerivedDataEntries.map(\.id))
+  }
+
+  private var activeSearchText: Binding<String> {
+    slimmingMode == .derivedData ? $derivedDataSearchText : $searchText
+  }
+
   private var singleSelectedDevice: SimulatorDevice? {
     let selected = model.selectedDevices
     return selected.count == 1 ? selected[0] : nil
@@ -32,9 +49,15 @@ struct ContentView: View {
     }
   }
 
-  private var automaticDiskAnalysisID: String {
-    guard slimmingMode == .disk else { return "memory" }
-    return "disk:" + model.selectedUDIDs.sorted().joined(separator: ",")
+  private var automaticAnalysisID: String {
+    switch slimmingMode {
+    case .memory:
+      return "memory"
+    case .disk:
+      return "disk:" + model.selectedUDIDs.sorted().joined(separator: ",")
+    case .derivedData:
+      return "derived-data"
+    }
   }
 
   var body: some View {
@@ -47,133 +70,180 @@ struct ContentView: View {
         Divider()
         selectionBar
         Divider()
-        simulatorTable
+        detailTable
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
           .layoutPriority(1)
         Divider()
-        ActivityPanel()
+        ActivityPanel(mode: slimmingMode)
       }
       .background(Color(nsColor: .windowBackgroundColor))
     }
     .toolbar {
-      if slimmingMode == .memory {
-        ToolbarItem(placement: .automatic) {
-          Button {
-            managementSheet = .slimmingRecommendation(model.selectedDevices)
-          } label: {
-            ToolbarActionLabel("Slim", systemImage: "minus.circle")
-          }
-          .disabled(model.selectionCount == 0 || model.isBusy)
-          .help("Apply the selected service profile")
-        }
-
-        ToolbarItem(placement: .automatic) {
-          Button {
-            Task { await model.restoreSelection() }
-          } label: {
-            ToolbarActionLabel("Unslim", systemImage: "plus.circle")
-          }
-          .disabled(model.selectionCount == 0 || model.isBusy)
-          .help("Restore all SimSlim-managed services")
-        }
-      } else {
+      if slimmingMode == .derivedData {
         ToolbarItem(placement: .automatic) {
           Button(role: .destructive) {
-            managementSheet = .diskCleanup(model.selectedDevices, selectedCleanableDiskCategories)
+            managementSheet = .derivedDataCleanup(model.selectedDerivedDataEntries)
           } label: {
-            ToolbarActionLabel("Clean Disk", systemImage: "externaldrive.badge.xmark")
+            ToolbarActionLabel("Delete Data", systemImage: "trash")
           }
-          .disabled(!model.canCleanDiskSelection || model.isBusy)
-          .help("Permanently clean the selected disk categories")
+          .disabled(!model.canCleanDerivedDataSelection || model.isBusy)
+          .help("Permanently delete the selected generated directories")
         }
-      }
 
-      if #available(macOS 26.0, *) {
-        ToolbarSpacer(.flexible)
+        ToolbarItem(placement: .automatic) {
+          Button {
+            openDerivedDataRootInFinder()
+          } label: {
+            ToolbarActionLabel("Show in Finder", systemImage: "folder")
+          }
+          .disabled(model.derivedDataScan == nil)
+          .help("Show Xcode Derived Data in Finder")
+        }
+      } else {
+        if slimmingMode == .memory {
+          ToolbarItem(placement: .automatic) {
+            Button {
+              managementSheet = .slimmingRecommendation(model.selectedDevices)
+            } label: {
+              ToolbarActionLabel("Slim", systemImage: "minus.circle")
+            }
+            .disabled(model.selectionCount == 0 || model.isBusy)
+            .help("Apply the selected service profile")
+          }
+
+          ToolbarItem(placement: .automatic) {
+            Button {
+              Task { await model.restoreSelection() }
+            } label: {
+              ToolbarActionLabel("Unslim", systemImage: "plus.circle")
+            }
+            .disabled(model.selectionCount == 0 || model.isBusy)
+            .help("Restore all SimSlim-managed services")
+          }
+        } else {
+          ToolbarItem(placement: .automatic) {
+            Button(role: .destructive) {
+              managementSheet = .diskCleanup(
+                model.selectedDevices,
+                selectedCleanableDiskCategories
+              )
+            } label: {
+              ToolbarActionLabel("Clean Disk", systemImage: "externaldrive.badge.xmark")
+            }
+            .disabled(!model.canCleanDiskSelection || model.isBusy)
+            .help("Permanently clean the selected disk categories")
+          }
+        }
+
+        if #available(macOS 26.0, *) {
+          ToolbarSpacer(.flexible)
+        }
+
+        ToolbarItemGroup(placement: .automatic) {
+          Button {
+            guard let device = singleSelectedDevice else { return }
+            managementSheet = .clone(device)
+          } label: {
+            ToolbarActionLabel("Clone", systemImage: "plus.square.on.square")
+          }
+          .disabled(singleSelectedDevice == nil || model.isBusy)
+          .help("Clone for backup or general-purpose use")
+
+          Button(role: .destructive) {
+            managementSheet = .erase(model.selectedDevices)
+          } label: {
+            ToolbarActionLabel("Erase", systemImage: "eraser")
+          }
+          .disabled(model.selectionCount == 0 || model.isBusy)
+          .help("Erase Simulator")
+
+          Button(role: .destructive) {
+            managementSheet = .delete(model.selectedDevices)
+          } label: {
+            ToolbarActionLabel("Delete", systemImage: "trash")
+          }
+          .disabled(model.selectionCount == 0 || model.isBusy)
+          .help("Delete Simulator")
+        }
+
+        if #available(macOS 26.0, *) {
+          ToolbarSpacer(.flexible)
+        }
+
+        ToolbarItemGroup(placement: .automatic) {
+          Button {
+            guard let device = singleSelectedDevice else { return }
+            Task { await model.bootSimulator(device) }
+          } label: {
+            ToolbarActionLabel("Boot", systemImage: "play.fill")
+          }
+          .disabled(
+            singleSelectedDevice == nil || singleSelectedDevice?.isBooted == true || model.isBusy
+          )
+          .help("Boot Simulator")
+
+          Button {
+            guard let device = singleSelectedDevice else { return }
+            Task { await model.shutdownSimulator(device) }
+          } label: {
+            ToolbarActionLabel("Kill", systemImage: "stop.fill")
+          }
+          .disabled(
+            singleSelectedDevice == nil || singleSelectedDevice?.isBooted == false || model.isBusy
+          )
+          .help("Shut Down Simulator")
+
+          Button {
+            guard let device = singleSelectedDevice else { return }
+            managementSheet = .rename(device)
+          } label: {
+            ToolbarActionLabel("Rename", systemImage: "pencil")
+          }
+          .disabled(singleSelectedDevice == nil || model.isBusy)
+          .help("Rename Simulator")
+        }
+
+        if #available(macOS 26.0, *) {
+          ToolbarSpacer(.flexible)
+        }
       }
 
       ToolbarItemGroup(placement: .automatic) {
         Button {
-          guard let device = singleSelectedDevice else { return }
-          managementSheet = .clone(device)
-        } label: {
-          ToolbarActionLabel("Clone", systemImage: "plus.square.on.square")
-        }
-        .disabled(singleSelectedDevice == nil || model.isBusy)
-        .help("Clone for backup or general-purpose use")
-
-        Button(role: .destructive) {
-          managementSheet = .erase(model.selectedDevices)
-        } label: {
-          ToolbarActionLabel("Erase", systemImage: "eraser")
-        }
-        .disabled(model.selectionCount == 0 || model.isBusy)
-        .help("Erase Simulator")
-
-        Button(role: .destructive) {
-          managementSheet = .delete(model.selectedDevices)
-        } label: {
-          ToolbarActionLabel("Delete", systemImage: "trash")
-        }
-        .disabled(model.selectionCount == 0 || model.isBusy)
-        .help("Delete Simulator")
-      }
-
-      if #available(macOS 26.0, *) {
-        ToolbarSpacer(.flexible)
-      }
-
-      ToolbarItemGroup(placement: .automatic) {
-        Button {
-          guard let device = singleSelectedDevice else { return }
-          Task { await model.bootSimulator(device) }
-        } label: {
-          ToolbarActionLabel("Boot", systemImage: "play.fill")
-        }
-        .disabled(
-          singleSelectedDevice == nil || singleSelectedDevice?.isBooted == true || model.isBusy
-        )
-        .help("Boot Simulator")
-
-        Button {
-          guard let device = singleSelectedDevice else { return }
-          Task { await model.shutdownSimulator(device) }
-        } label: {
-          ToolbarActionLabel("Kill", systemImage: "stop.fill")
-        }
-        .disabled(
-          singleSelectedDevice == nil || singleSelectedDevice?.isBooted == false || model.isBusy
-        )
-        .help("Shut Down Simulator")
-
-        Button {
-          guard let device = singleSelectedDevice else { return }
-          managementSheet = .rename(device)
-        } label: {
-          ToolbarActionLabel("Rename", systemImage: "pencil")
-        }
-        .disabled(singleSelectedDevice == nil || model.isBusy)
-        .help("Rename Simulator")
-      }
-
-      if #available(macOS 26.0, *) {
-        ToolbarSpacer(.flexible)
-      }
-
-      ToolbarItemGroup(placement: .automatic) {
-        Button {
-          Task { await model.refresh() }
+          Task {
+            if slimmingMode == .derivedData {
+              await model.scanDerivedData()
+            } else {
+              await model.refresh()
+            }
+          }
         } label: {
           ToolbarActionLabel("Refresh", systemImage: "arrow.clockwise")
         }
         .disabled(model.isBusy)
-        .help("Refresh simulator status")
+        .help(
+          slimmingMode == .derivedData
+            ? "Re-scan Xcode Derived Data" : "Refresh simulator status")
 
         Menu {
-          Button("Select Visible") { model.select(filteredUDIDs) }
-            .disabled(filteredDevices.isEmpty)
-          Button("Clear Selection") { model.clearSelection() }
-            .disabled(model.selectionCount == 0)
+          if slimmingMode == .derivedData {
+            Button("Select Visible") { model.selectDerivedData(filteredDerivedDataIDs) }
+              .disabled(filteredDerivedDataEntries.isEmpty)
+            Button("Select 1 GB or Larger") {
+              model.selectDerivedData(
+                Set(model.derivedDataEntries.filter { $0.bytes >= 1_000_000_000 }.map(\.id))
+              )
+            }
+            .disabled(!model.derivedDataEntries.contains { $0.bytes >= 1_000_000_000 })
+            Divider()
+            Button("Clear Selection") { model.selectDerivedData([]) }
+              .disabled(model.selectedDerivedDataIDs.isEmpty)
+          } else {
+            Button("Select Visible") { model.select(filteredUDIDs) }
+              .disabled(filteredDevices.isEmpty)
+            Button("Clear Selection") { model.clearSelection() }
+              .disabled(model.selectionCount == 0)
+          }
         } label: {
           ToolbarActionLabel("Selection", systemImage: "checklist")
         }
@@ -186,8 +256,8 @@ struct ContentView: View {
 
       ToolbarItem(placement: .automatic) {
         CollapsibleToolbarSearch(
-          text: $searchText,
-          prompt: "Find a simulator",
+          text: activeSearchText,
+          prompt: slimmingMode == .derivedData ? "Find Derived Data" : "Find a simulator",
           isExpanded: $searchIsExpanded
         )
       }
@@ -202,13 +272,29 @@ struct ContentView: View {
         dismissButton: .default(Text("OK"))
       )
     }
-    .task(id: automaticDiskAnalysisID) {
-      guard slimmingMode == .disk, model.selectionCount > 0 else { return }
-      await model.analyzeDiskSelectionIfNeeded()
+    .task(id: automaticAnalysisID) {
+      switch slimmingMode {
+      case .memory:
+        break
+      case .disk:
+        guard model.selectionCount > 0 else { return }
+        await model.analyzeDiskSelectionIfNeeded()
+      case .derivedData:
+        await model.scanDerivedDataIfNeeded()
+      }
     }
   }
 
+  @ViewBuilder
   private var header: some View {
+    if slimmingMode == .derivedData {
+      derivedDataHeader
+    } else {
+      simulatorHeader
+    }
+  }
+
+  private var simulatorHeader: some View {
     HStack(spacing: 18) {
       VStack(alignment: .leading, spacing: 4) {
         Text("Installed Simulators")
@@ -228,7 +314,44 @@ struct ContentView: View {
     .padding(.vertical, 15)
   }
 
+  private var derivedDataHeader: some View {
+    HStack(spacing: 18) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Xcode Derived Data")
+          .font(.system(size: 27, weight: .bold, design: .rounded))
+        Text(derivedDataLastScannedText)
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+      }
+
+      Spacer()
+
+      MetricPill(
+        value: model.derivedDataScan?.totalSizeText ?? "—",
+        label: "Generated",
+        color: .orange
+      )
+      MetricPill(value: "\(model.derivedDataEntries.count)", label: "Folders", color: .blue)
+      MetricPill(
+        value: model.selectedDerivedDataSizeText(),
+        label: "Selected",
+        color: .purple
+      )
+    }
+    .padding(.horizontal, 20)
+    .padding(.vertical, 15)
+  }
+
+  @ViewBuilder
   private var selectionBar: some View {
+    if slimmingMode == .derivedData {
+      derivedDataSelectionBar
+    } else {
+      simulatorSelectionBar
+    }
+  }
+
+  private var simulatorSelectionBar: some View {
     VStack(spacing: 10) {
       HStack(spacing: 12) {
         Button {
@@ -295,6 +418,140 @@ struct ContentView: View {
     .padding(.vertical, 11)
     .background(.bar)
     .animation(.easeInOut(duration: 0.2), value: model.batchProgress)
+  }
+
+  private var derivedDataSelectionBar: some View {
+    HStack(spacing: 12) {
+      Button {
+        if !filteredDerivedDataEntries.isEmpty
+          && filteredDerivedDataIDs.isSubset(of: model.selectedDerivedDataIDs)
+        {
+          model.selectDerivedData(
+            model.selectedDerivedDataIDs.subtracting(filteredDerivedDataIDs)
+          )
+        } else {
+          model.selectDerivedData(
+            model.selectedDerivedDataIDs.union(filteredDerivedDataIDs)
+          )
+        }
+      } label: {
+        Image(systemName: derivedDataSelectionAllImage)
+          .font(.title3)
+          .foregroundStyle(
+            filteredDerivedDataEntries.isEmpty ? Color.secondary : Color.accentColor)
+      }
+      .buttonStyle(.plain)
+      .disabled(filteredDerivedDataEntries.isEmpty || model.isBusy)
+      .help("Select or deselect all visible Derived Data directories")
+
+      if model.isScanningDerivedData {
+        ProgressView()
+          .controlSize(.small)
+        Text("Scanning folder sizes…")
+          .foregroundStyle(.secondary)
+      } else if model.isCleaningDerivedData {
+        ProgressView()
+          .controlSize(.small)
+        Text("Deleting selected generated data…")
+          .foregroundStyle(.secondary)
+      } else if model.selectedDerivedDataIDs.isEmpty {
+        Text("Select folders to reclaim their disk space")
+          .foregroundStyle(.secondary)
+      } else {
+        Text("\(model.selectedDerivedDataIDs.count) selected")
+          .fontWeight(.semibold)
+        Text("· \(model.selectedDerivedDataSizeText()) will be reclaimed")
+          .foregroundStyle(.orange)
+      }
+
+      Spacer()
+    }
+    .controlSize(.regular)
+    .padding(.horizontal, 18)
+    .padding(.vertical, 11)
+    .background(.bar)
+  }
+
+  @ViewBuilder
+  private var detailTable: some View {
+    if slimmingMode == .derivedData {
+      derivedDataTable
+    } else {
+      simulatorTable
+    }
+  }
+
+  private var derivedDataTable: some View {
+    VStack(spacing: 0) {
+      derivedDataTableHeader
+      Divider()
+
+      GeometryReader { geometry in
+        Group {
+          if model.isScanningDerivedData && model.derivedDataScan == nil {
+            VStack(spacing: 12) {
+              ProgressView()
+              Text("Scanning Xcode Derived Data…")
+                .foregroundStyle(.secondary)
+              Text("Large build and module caches can take a moment to measure.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+          } else if model.derivedDataScan == nil {
+            VStack(spacing: 12) {
+              Image(systemName: "externaldrive.badge.questionmark")
+                .font(.system(size: 34))
+                .foregroundStyle(.secondary)
+              Text("Derived Data hasn’t been scanned")
+                .font(.title3.weight(.semibold))
+              Button("Scan Now") {
+                Task { await model.scanDerivedData() }
+              }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+          } else if filteredDerivedDataEntries.isEmpty {
+            ContentUnavailableView(
+              derivedDataSearchText.isEmpty ? "No Derived Data" : "No Matches",
+              systemImage: derivedDataSearchText.isEmpty ? "checkmark.circle" : "magnifyingglass",
+              description: Text(
+                derivedDataSearchText.isEmpty
+                  ? "Xcode has no generated project or cache directories to clean."
+                  : "Try a different project, directory, or cache name.")
+            )
+            .frame(width: geometry.size.width, height: geometry.size.height)
+          } else {
+            ScrollView {
+              LazyVStack(spacing: 0) {
+                ForEach(filteredDerivedDataEntries) { entry in
+                  DerivedDataRow(entry: entry)
+                  Divider().padding(.leading, 48)
+                }
+              }
+              .frame(width: geometry.size.width, alignment: .top)
+            }
+          }
+        }
+        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+  }
+
+  private var derivedDataTableHeader: some View {
+    HStack(spacing: 12) {
+      Color.clear.frame(width: 24, height: 1)
+      Text("PROJECT / SOURCE")
+        .frame(minWidth: 280, maxWidth: .infinity, alignment: .leading)
+      Text("APP / BUILD METADATA").frame(width: 340, alignment: .leading)
+      Text("DISK SIZE").frame(width: 105, alignment: .trailing)
+      Color.clear.frame(width: 28, height: 1)
+    }
+    .font(.system(size: 10, weight: .semibold))
+    .foregroundStyle(.secondary)
+    .padding(.horizontal, 18)
+    .padding(.vertical, 8)
+    .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
   }
 
   private var simulatorTable: some View {
@@ -372,9 +629,28 @@ struct ContentView: View {
     return "square"
   }
 
+  private var derivedDataSelectionAllImage: String {
+    if !filteredDerivedDataEntries.isEmpty
+      && filteredDerivedDataIDs.isSubset(of: model.selectedDerivedDataIDs)
+    {
+      return "checkmark.square.fill"
+    }
+    if !filteredDerivedDataIDs.intersection(model.selectedDerivedDataIDs).isEmpty {
+      return "minus.square.fill"
+    }
+    return "square"
+  }
+
   private var lastUpdatedText: String {
     guard let date = model.lastUpdated else { return "Loading simulator status…" }
     return "Updated \(date.formatted(date: .omitted, time: .shortened))"
+  }
+
+  private var derivedDataLastScannedText: String {
+    guard let date = model.derivedDataLastScanned else {
+      return model.isScanningDerivedData ? "Scanning folder sizes…" : "Waiting to scan…"
+    }
+    return "Scanned \(date.formatted(date: .omitted, time: .shortened))"
   }
 
   @ViewBuilder
@@ -429,12 +705,35 @@ struct ContentView: View {
       } onConfirm: { categoryIDs in
         Task { await model.cleanDisk(devices, categoryIDs: categoryIDs) }
       }
+
+    case .derivedDataCleanup(let entries):
+      DerivedDataCleanupConfirmationSheet(entries: entries) {
+        Task { await model.cleanDerivedData(entries) }
+      }
     }
   }
 
   private func presentAfterSheetDismissal(_ sheet: SimulatorManagementSheet) {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
       managementSheet = sheet
+    }
+  }
+
+  private func openDerivedDataRootInFinder() {
+    guard let rootPath = model.derivedDataScan?.rootPath else { return }
+    let url = URL(fileURLWithPath: rootPath, isDirectory: true)
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else {
+      model.presentedError = PresentedError(
+        message: "The Xcode Derived Data directory does not exist at \(url.path)."
+      )
+      return
+    }
+    guard NSWorkspace.shared.open(url) else {
+      model.presentedError = PresentedError(message: "Finder could not open \(url.path).")
+      return
     }
   }
 }
@@ -653,7 +952,7 @@ private struct ProfileSidebar: View {
         VStack(alignment: .leading, spacing: 2) {
           Text("SimSlim")
             .font(.title2.bold())
-          Text(mode == .memory ? "Service slimming · reversible" : "Disk analysis & cleanup")
+          Text(modeSubtitle)
             .font(.caption)
             .foregroundStyle(.secondary)
         }
@@ -675,16 +974,27 @@ private struct ProfileSidebar: View {
 
       ScrollView {
         Group {
-          if mode == .memory {
+          switch mode {
+          case .memory:
             memoryContent
-          } else {
+          case .disk:
             diskContent
+          case .derivedData:
+            derivedDataContent
           }
         }
         .padding(16)
       }
     }
     .background(.regularMaterial)
+  }
+
+  private var modeSubtitle: String {
+    switch mode {
+    case .memory: return "Service slimming · reversible"
+    case .disk: return "Simulator disk cleanup"
+    case .derivedData: return "Xcode build storage"
+    }
   }
 
   private var sortedMemoryCategories: [SlimCategory] {
@@ -863,6 +1173,95 @@ private struct ProfileSidebar: View {
       }
       .padding(.horizontal, 4)
       .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  private var derivedDataContent: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      VStack(alignment: .leading, spacing: 5) {
+        HStack {
+          Text("Generated by Xcode")
+            .font(.headline)
+          Spacer()
+          Text(model.derivedDataScan?.totalSizeText ?? "Pending")
+            .font(.caption.monospacedDigit().weight(.semibold))
+            .foregroundStyle(model.derivedDataScan == nil ? Color.secondary : Color.orange)
+        }
+        Text(
+          "Project build products, indexes, module caches, and package working data. The largest folders are shown first."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+        Button {
+          Task { await model.scanDerivedData() }
+        } label: {
+          Label("Re-scan Derived Data", systemImage: "arrow.clockwise")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .disabled(model.isBusy)
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        Label("Select individual folders", systemImage: "checklist")
+          .font(.subheadline.weight(.semibold))
+        Text(
+          "Use the main table to keep active projects and remove stale copies or oversized shared caches."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+        if let largest = model.derivedDataEntries.first {
+          HStack {
+            VStack(alignment: .leading, spacing: 2) {
+              Text("Largest")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+              Text(largest.name)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+            }
+            Spacer()
+            Text(largest.sizeText)
+              .font(.caption.monospacedDigit().weight(.semibold))
+              .foregroundStyle(.orange)
+          }
+          .padding(10)
+          .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 9)
+          )
+        }
+      }
+
+      VStack(alignment: .leading, spacing: 7) {
+        Label("Regenerated automatically", systemImage: "arrow.triangle.2.circlepath")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(.blue)
+        Text(
+          "Deleting Derived Data does not delete source code. Xcode rebuilds what it needs, so the next build and index may take longer."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(Color.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+
+      VStack(alignment: .leading, spacing: 5) {
+        Label("Cleanup boundary", systemImage: "checkmark.shield")
+          .font(.subheadline.weight(.semibold))
+        Text(
+          "Only selected direct children of DerivedData can be deleted. Archives, DeviceSupport, simulators, and project source folders are never scanned or touched."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
     }
   }
 
@@ -1232,6 +1631,203 @@ private struct AlwaysEnabledServiceRow: View {
   }
 }
 
+private struct DerivedDataRow: View {
+  @EnvironmentObject private var model: AppModel
+  let entry: DerivedDataEntry
+
+  private var isSelected: Bool {
+    model.selectedDerivedDataIDs.contains(entry.id)
+  }
+
+  var body: some View {
+    HStack(spacing: 12) {
+      Button {
+        model.toggleDerivedDataSelection(entry.id)
+      } label: {
+        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+          .font(.title3)
+          .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+      }
+      .buttonStyle(.plain)
+      .disabled(model.isBusy)
+      .frame(width: 24)
+
+      HStack(spacing: 10) {
+        Image(systemName: entry.systemImage)
+          .font(.system(size: 18, weight: .medium))
+          .foregroundStyle(entry.kind == "project" ? Color.blue : Color.orange)
+          .frame(width: 35, height: 35)
+          .background(
+            (entry.kind == "project" ? Color.blue : Color.orange).opacity(0.09),
+            in: RoundedRectangle(cornerRadius: 9)
+          )
+
+        VStack(alignment: .leading, spacing: 2) {
+          Text(entry.name)
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+
+          if let sourcePath = entry.sourceDisplayPath {
+            HStack(spacing: 4) {
+              if entry.sourceIsMissing {
+                Image(systemName: "exclamationmark.triangle.fill")
+                  .foregroundStyle(.orange)
+              }
+              Text(sourcePath)
+                .lineLimit(1)
+            }
+            .font(.caption)
+            .foregroundStyle(entry.sourceIsMissing ? Color.orange : Color.secondary)
+            .help(
+              entry.sourceIsMissing
+                ? "This source workspace no longer exists. The Derived Data may be stale."
+                : entry.sourcePath ?? sourcePath)
+
+            Text(entry.directoryName)
+              .font(.system(size: 8, design: .monospaced))
+              .foregroundStyle(.tertiary)
+              .lineLimit(1)
+              .help(entry.path)
+          } else {
+            Text(entry.directoryName)
+              .font(.system(size: 9, design: .monospaced))
+              .foregroundStyle(.tertiary)
+              .lineLimit(1)
+              .help(entry.path)
+          }
+        }
+      }
+      .frame(minWidth: 280, maxWidth: .infinity, alignment: .leading)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text(entry.metadataTitle)
+          .font(
+            entry.bundleIdentifier == nil
+              ? .subheadline.weight(.medium)
+              : .system(size: 12, weight: .medium, design: .monospaced)
+          )
+          .foregroundStyle(entry.kind == "project" ? Color.primary : Color.secondary)
+          .lineLimit(1)
+
+        if let versionSummary = entry.versionBuildSummary {
+          Text(versionSummary)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        } else if entry.kind == "project" {
+          Text("No built app metadata found")
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+        } else {
+          Text("Updated \(entry.modifiedDate.formatted(date: .abbreviated, time: .shortened))")
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+        }
+
+        if let buildContext = entry.buildContextSummary {
+          HStack(spacing: 5) {
+            Text(buildContext)
+            if let buildDate = entry.latestBuildDate {
+              Text("·")
+              Text(buildDate.formatted(date: .abbreviated, time: .shortened))
+            }
+          }
+          .font(.caption2)
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+          .help(entry.productPath ?? "")
+        }
+      }
+      .frame(width: 340, alignment: .leading)
+
+      Text(entry.sizeText)
+        .font(.subheadline.monospacedDigit().weight(.semibold))
+        .foregroundStyle(.orange)
+        .frame(width: 105, alignment: .trailing)
+
+      Menu {
+        Button {
+          revealInFinder()
+        } label: {
+          Label("Show Derived Data in Finder", systemImage: "folder")
+        }
+
+        if entry.sourceExists == true, entry.sourcePath != nil {
+          Button {
+            revealSourceInFinder()
+          } label: {
+            Label("Show Source Workspace in Finder", systemImage: "folder.badge.gearshape")
+          }
+        }
+
+        if entry.productPath != nil {
+          Button {
+            revealBuildProductInFinder()
+          } label: {
+            Label("Show Built App in Finder", systemImage: "app")
+          }
+        }
+
+        if let bundleIdentifier = entry.bundleIdentifier {
+          Divider()
+          Button {
+            copyToPasteboard(bundleIdentifier)
+          } label: {
+            Label("Copy Bundle Identifier", systemImage: "doc.on.doc")
+          }
+        }
+
+        Divider()
+        Button(isSelected ? "Deselect" : "Select") {
+          model.toggleDerivedDataSelection(entry.id)
+        }
+      } label: {
+        Image(systemName: "ellipsis")
+          .frame(width: 20)
+      }
+      .menuStyle(.borderlessButton)
+      .fixedSize()
+      .disabled(model.isBusy)
+      .frame(width: 28)
+    }
+    .padding(.horizontal, 18)
+    .padding(.vertical, 8)
+    .background(isSelected ? Color.accentColor.opacity(0.075) : Color.clear)
+    .animation(.easeInOut(duration: 0.16), value: isSelected)
+  }
+
+  private func revealInFinder() {
+    let url = URL(fileURLWithPath: entry.path, isDirectory: true)
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else {
+      model.presentedError = PresentedError(
+        message: "\(entry.name) no longer exists at \(entry.path). Re-scan Derived Data."
+      )
+      return
+    }
+    NSWorkspace.shared.activateFileViewerSelecting([url])
+  }
+
+  private func revealSourceInFinder() {
+    guard let sourcePath = entry.sourcePath else { return }
+    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: sourcePath)])
+  }
+
+  private func revealBuildProductInFinder() {
+    guard let productPath = entry.productPath else { return }
+    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: productPath)])
+  }
+
+  private func copyToPasteboard(_ text: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+  }
+}
+
 private struct SimulatorRow: View {
   @EnvironmentObject private var model: AppModel
   let device: SimulatorDevice
@@ -1540,6 +2136,7 @@ private struct ServiceStateView: View {
 
 private struct ActivityPanel: View {
   @EnvironmentObject private var model: AppModel
+  let mode: SlimmingMode
 
   var body: some View {
     VStack(spacing: 0) {
@@ -1560,8 +2157,12 @@ private struct ActivityPanel: View {
         HStack(spacing: 8) {
           Image(systemName: "checkmark.circle")
             .foregroundStyle(.green)
-          Text("Ready. Select simulators, then choose an action from the toolbar.")
-            .foregroundStyle(.secondary)
+          Text(
+            mode == .derivedData
+              ? "Ready. Select generated directories, then delete them from the toolbar."
+              : "Ready. Select simulators, then choose an action from the toolbar."
+          )
+          .foregroundStyle(.secondary)
           Spacer()
         }
         .font(.caption)

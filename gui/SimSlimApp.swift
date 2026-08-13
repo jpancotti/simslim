@@ -109,14 +109,18 @@ private final class ToolbarDisplayModeView: NSView {
 
   private func arrangeFlexibleSpaces(in toolbar: NSToolbar) {
     guard !isArrangingToolbar else { return }
-    guard toolbar.items.contains(where: { $0.label == "Rename" }) else { return }
 
-    let boundaryLabels = [
-      toolbar.items.contains(where: { $0.label == "Unslim" }) ? "Unslim" : "Clean Disk",
-      "Delete",
-      "Rename",
-      "Selection",
-    ]
+    let boundaryLabels: [String]
+    if toolbar.items.contains(where: { $0.label == "Rename" }) {
+      boundaryLabels = [
+        toolbar.items.contains(where: { $0.label == "Unslim" }) ? "Unslim" : "Clean Disk",
+        "Delete",
+        "Rename",
+        "Selection",
+      ]
+    } else {
+      boundaryLabels = ["Show in Finder", "Selection"]
+    }
 
     let spaceIndices = toolbar.items.indices.filter {
       let identifier = toolbar.items[$0].itemIdentifier

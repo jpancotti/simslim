@@ -79,6 +79,18 @@ struct SimSlimBackend {
     return try await decode(SimulatorDiskCleanupResult.self, arguments: arguments)
   }
 
+  func derivedData() async throws -> DerivedDataScan {
+    try await decode(DerivedDataScan.self, arguments: ["derived-data", "--json"])
+  }
+
+  func cleanDerivedData(entryIDs: Set<String>) async throws -> DerivedDataCleanupResult {
+    var arguments = ["derived-data-clean", "--json", "--confirm"]
+    for entryID in entryIDs.sorted() {
+      arguments.append(contentsOf: ["--entry", entryID])
+    }
+    return try await decode(DerivedDataCleanupResult.self, arguments: arguments)
+  }
+
   func slim(
     udid: String,
     exceptCategories: Set<String>,

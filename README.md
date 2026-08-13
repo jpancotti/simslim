@@ -41,6 +41,8 @@ The SwiftUI app bundles the CLI and adds:
 - Searchable simulator status, disk-size, and live RAM columns.
 - Searchable service profiles with per-daemon controls and purpose summaries.
 - Read-only disk analysis plus confirmed cleanup of allowlisted data.
+- A Derived Data mode that scans Xcode's generated folders and deletes only
+  explicitly selected project or shared-cache directories.
 - Clone, rename, erase, delete, and Finder shortcuts.
 
 Build it locally with Go and Xcode:
@@ -70,6 +72,8 @@ simslim top              # live fleet monitor; enter a sim for per-daemon RAM/CP
 simslim size <udid>      # total allocated simulator size
 simslim disk-plan <udid> # measure reclaimable data; read-only
 simslim disk-clean --categories caches,logs --confirm <udid>
+simslim derived-data     # scan Xcode Derived Data; read-only
+simslim derived-data-clean --entry <directory-name> --confirm
 simslim clone <udid> <name>
 simslim rename <udid> <name>
 simslim boot <udid>      # boot a simulator and wait for its services
@@ -129,6 +133,32 @@ on-demand language data is opt-in and may download again when needed.
 Documents, app data, and user media. Those durable rows are never eligible for
 cleanup. See the [disk cleanup safety model](docs/disk-cleanup.md) for recovery
 behavior, safeguards, and Xcode 26.6 validation results.
+
+## Derived Data
+
+The app's **Derived Data** segment scans
+`~/Library/Developer/Xcode/DerivedData`, sorts its generated directories by
+allocated size, and lets you remove stale projects or oversized shared caches.
+Project rows identify the source workspace and most recently built app, including
+its bundle identifier, app version, build number, package version, configuration,
+platform, SDK, and minimum OS when Xcode recorded those values. Missing source
+workspaces are called out so abandoned build data is easier to recognize.
+Scanning is read-only. Cleanup requires confirmation and permanently deletes only
+the exact direct-child directories selected from that scan.
+
+```sh
+simslim derived-data
+simslim derived-data-clean \
+  --entry FleetDog-gqunbotdqvgsfeemshfcnsyrblmp \
+  --entry ModuleCache.noindex \
+  --confirm
+```
+
+Xcode regenerates deleted build products, indexes, module caches, and package
+working data, so the next build or index may be slower. Project source, Archives,
+iOS DeviceSupport, simulator data, and the DerivedData root itself are outside
+the cleanup boundary. Avoid deleting while a build is running. See the
+[Derived Data safety model](docs/derived-data.md) for the exact safeguards.
 
 Keep a category you actually need, like Spotlight search:
 
@@ -263,7 +293,7 @@ CLI uses. macOS only, since everything runs through `xcrun simctl`.
 
 ## How it works
 
-`simslim on` writes persistent `launchctl disable` entries for the chosen daemons into the simulator's own launchd database, then reboots it. The entries stick across reboots, so the simulator comes up slim in a single boot from then on. `simslim off` clears them and reboots back to stock. Your Mac is never touched, only the simulator you point it at, and only daemons that are safe to disable. Core workflow services such as `sharingd`, plus the handful that wedge a simulator when turned off, are left running.
+`simslim on` writes persistent `launchctl disable` entries for the chosen daemons into the simulator's own launchd database, then reboots it. The entries stick across reboots, so the simulator comes up slim in a single boot from then on. `simslim off` clears them and reboots back to stock. Service slimming never changes the host Mac: only the exact simulator you point it at and daemons that are safe to disable. The separately confirmed Derived Data cleanup is the sole host-storage feature. Core workflow services such as `sharingd`, plus the handful that wedge a simulator when turned off, are left running.
 
 Older runtimes do not persist launchd overrides across a reboot (observed on
 iOS 17): `launchctl` accepts each disable, but the simulator comes back stock.

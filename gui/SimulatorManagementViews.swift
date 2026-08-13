@@ -7,6 +7,7 @@ enum SimulatorManagementSheet: Identifiable {
   case erase([SimulatorDevice])
   case delete([SimulatorDevice])
   case diskCleanup([SimulatorDevice], [DiskCleanupCategory])
+  case derivedDataCleanup([DerivedDataEntry])
 
   var id: String {
     switch self {
@@ -21,6 +22,8 @@ enum SimulatorManagementSheet: Identifiable {
         + devices.map(\.udid).joined(separator: ",")
         + "-"
         + categories.map(\.id).sorted().joined(separator: ",")
+    case .derivedDataCleanup(let entries):
+      return "derived-data-cleanup-" + entries.map(\.id).sorted().joined(separator: ",")
     }
   }
 }
@@ -458,5 +461,140 @@ struct DiskCleanupConfirmationSheet: View {
       $0 + (model.diskCleanupPlans[$1.udid]?.bytes(for: categoryID) ?? 0)
     }
     return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+  }
+}
+
+struct DerivedDataCleanupConfirmationSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @State private var confirmationText = ""
+
+  let entries: [DerivedDataEntry]
+  let onConfirm: () -> Void
+
+  private var estimatedBytes: Int64 {
+    entries.reduce(0) { $0 + $1.bytes }
+  }
+
+  private var estimatedSizeText: String {
+    ByteCountFormatter.string(fromByteCount: estimatedBytes, countStyle: .file)
+  }
+
+  private var isConfirmed: Bool {
+    confirmationText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "DELETE"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 18) {
+      HStack(alignment: .top, spacing: 13) {
+        Image(systemName: "trash.fill")
+          .font(.system(size: 24, weight: .semibold))
+          .foregroundStyle(.red)
+          .frame(width: 44, height: 44)
+          .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
+
+        VStack(alignment: .leading, spacing: 4) {
+          Text(
+            "Delete \(entries.count) Derived Data Director\(entries.count == 1 ? "y" : "ies")?"
+          )
+          .font(.title2.bold())
+          Text(
+            "Approximately \(estimatedSizeText) will be removed immediately, not moved to Trash."
+          )
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+        }
+      }
+
+      VStack(alignment: .leading, spacing: 7) {
+        Label("Safe to regenerate, but builds will do more work", systemImage: "hammer")
+          .font(.subheadline.weight(.semibold))
+        Text(
+          "Xcode recreates build products, indexes, module caches, and package working data as needed. The next build or index may be significantly slower."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+        Label("Do not delete during an active build", systemImage: "exclamationmark.triangle")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.orange)
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+
+      ScrollView {
+        VStack(spacing: 0) {
+          ForEach(entries) { entry in
+            HStack(spacing: 10) {
+              Image(systemName: entry.systemImage)
+                .foregroundStyle(entry.kind == "project" ? Color.blue : Color.orange)
+                .frame(width: 24)
+              VStack(alignment: .leading, spacing: 2) {
+                Text(entry.name)
+                  .font(.subheadline.weight(.semibold))
+                if let bundleIdentifier = entry.bundleIdentifier {
+                  Text(bundleIdentifier)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                }
+                if let versionSummary = entry.versionBuildSummary {
+                  Text(versionSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                } else {
+                  Text(entry.directoryName)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                }
+              }
+              Spacer()
+              Text(entry.sizeText)
+                .font(.subheadline.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+
+            if entry.id != entries.last?.id {
+              Divider().padding(.leading, 45)
+            }
+          }
+        }
+      }
+      .frame(maxHeight: 230)
+      .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+
+      Label(
+        "Project source, Xcode archives, device support files, and simulators are outside this cleanup.",
+        systemImage: "checkmark.shield"
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Type DELETE to continue")
+          .font(.subheadline.weight(.semibold))
+        TextField("DELETE", text: $confirmationText)
+          .textFieldStyle(.roundedBorder)
+      }
+
+      HStack {
+        Spacer()
+        Button("Cancel", role: .cancel) { dismiss() }
+          .keyboardShortcut(.cancelAction)
+        Button("Delete Derived Data", role: .destructive) {
+          dismiss()
+          onConfirm()
+        }
+        .disabled(!isConfirmed)
+      }
+    }
+    .padding(24)
+    .frame(width: 630)
   }
 }

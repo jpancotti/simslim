@@ -9,12 +9,17 @@ final class AppModel: ObservableObject {
   @Published private(set) var measurements: [String: SimulatorMeasurement] = [:]
   @Published private(set) var diskSizes: [String: SimulatorDiskMeasurement] = [:]
   @Published private(set) var diskSizeLoadingUDIDs: Set<String> = []
+  @Published private(set) var derivedDataScan: DerivedDataScan?
   @Published private(set) var activeOperations: [String: String] = [:]
   @Published private(set) var activity: [ActivityEntry] = []
   @Published private(set) var isRefreshing = false
+  @Published private(set) var isScanningDerivedData = false
+  @Published private(set) var isCleaningDerivedData = false
   @Published private(set) var batchProgress: BatchProgress?
   @Published private(set) var lastUpdated: Date?
+  @Published private(set) var derivedDataLastScanned: Date?
   @Published var selectedUDIDs: Set<String> = []
+  @Published var selectedDerivedDataIDs: Set<String> = []
   @Published var keptCategoryIDs: Set<String> = []
   @Published var keptServiceLabels: Set<String> = []
   @Published var selectedDiskCleanupCategoryIDs: Set<String> = []
@@ -43,7 +48,8 @@ final class AppModel: ObservableObject {
   }
 
   var isBusy: Bool {
-    isRefreshing || batchProgress != nil || !activeOperations.isEmpty
+    isRefreshing || isScanningDerivedData || isCleaningDerivedData || batchProgress != nil
+      || !activeOperations.isEmpty
   }
 
   /// Labels kept enabled by a kept category or an individual keep. Categories
@@ -64,6 +70,22 @@ final class AppModel: ObservableObject {
 
   var selectedDevices: [SimulatorDevice] {
     devices.filter { selectedUDIDs.contains($0.udid) }
+  }
+
+  var derivedDataEntries: [DerivedDataEntry] {
+    derivedDataScan?.entries ?? []
+  }
+
+  var selectedDerivedDataEntries: [DerivedDataEntry] {
+    derivedDataEntries.filter { selectedDerivedDataIDs.contains($0.id) }
+  }
+
+  var selectedDerivedDataBytes: Int64 {
+    selectedDerivedDataEntries.reduce(0) { $0 + $1.bytes }
+  }
+
+  var canCleanDerivedDataSelection: Bool {
+    !selectedDerivedDataEntries.isEmpty && selectedDerivedDataBytes > 0
   }
 
   var diskAnalysisCoversSelection: Bool {
@@ -235,6 +257,79 @@ final class AppModel: ObservableObject {
       selectedDiskCleanupCategoryIDs.insert(category.id)
     } else {
       selectedDiskCleanupCategoryIDs.remove(category.id)
+    }
+  }
+
+  func selectDerivedData(_ entryIDs: Set<String>) {
+    let available = Set(derivedDataEntries.map(\.id))
+    selectedDerivedDataIDs = entryIDs.intersection(available)
+  }
+
+  func toggleDerivedDataSelection(_ entryID: String) {
+    guard derivedDataEntries.contains(where: { $0.id == entryID }) else { return }
+    if selectedDerivedDataIDs.contains(entryID) {
+      selectedDerivedDataIDs.remove(entryID)
+    } else {
+      selectedDerivedDataIDs.insert(entryID)
+    }
+  }
+
+  func selectedDerivedDataSizeText() -> String {
+    guard selectedDerivedDataBytes > 0 else { return "0 B" }
+    return ByteCountFormatter.string(fromByteCount: selectedDerivedDataBytes, countStyle: .file)
+  }
+
+  func scanDerivedDataIfNeeded() async {
+    guard derivedDataScan == nil else { return }
+    await scanDerivedData()
+  }
+
+  func scanDerivedData() async {
+    guard let backend, !isScanningDerivedData, !isCleaningDerivedData else { return }
+    isScanningDerivedData = true
+    record(.info, "Scanning Xcode Derived Data")
+    defer { isScanningDerivedData = false }
+
+    do {
+      let scan = try await backend.derivedData()
+      derivedDataScan = scan
+      derivedDataLastScanned = Date()
+      let available = Set(scan.entries.map(\.id))
+      selectedDerivedDataIDs.formIntersection(available)
+      record(
+        .success,
+        "Scanned \(scan.entries.count) Derived Data director\(scan.entries.count == 1 ? "y" : "ies"): \(scan.totalSizeText)"
+      )
+    } catch {
+      recordFailure(
+        "Could not scan Xcode Derived Data: \(error.localizedDescription)", present: true)
+    }
+  }
+
+  func cleanDerivedData(_ entries: [DerivedDataEntry]) async {
+    guard let backend, !isBusy, !entries.isEmpty else { return }
+    let available = Set(derivedDataEntries.map(\.id))
+    let entryIDs = Set(entries.map(\.id)).intersection(available)
+    guard !entryIDs.isEmpty else { return }
+
+    isCleaningDerivedData = true
+    record(
+      .info,
+      "Deleting \(entryIDs.count) selected Derived Data director\(entryIDs.count == 1 ? "y" : "ies")"
+    )
+    do {
+      let result = try await backend.cleanDerivedData(entryIDs: entryIDs)
+      selectedDerivedDataIDs.subtract(result.deletedEntryIds)
+      record(
+        .success,
+        "Deleted \(result.deletedEntryIds.count) Derived Data director\(result.deletedEntryIds.count == 1 ? "y" : "ies"): reclaimed \(result.reclaimedText)"
+      )
+      isCleaningDerivedData = false
+      await scanDerivedData()
+    } catch {
+      isCleaningDerivedData = false
+      recordFailure(
+        "Could not clean Xcode Derived Data: \(error.localizedDescription)", present: true)
     }
   }
 
